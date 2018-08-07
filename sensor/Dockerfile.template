@@ -1,0 +1,19 @@
+FROM resin/%%RESIN_MACHINE_NAME%%-debian
+
+WORKDIR /usr/src/app
+
+RUN    apt-get update \
+    && apt-get install \
+         git \
+         python3 \
+         python3-numpy \
+         python3-pip \
+    && apt-get clean
+
+COPY requirements.txt ./
+
+RUN pip3 install -r requirements.txt
+
+COPY *.py ./
+
+CMD while : ; do echo "Idling..."; sleep 60; done

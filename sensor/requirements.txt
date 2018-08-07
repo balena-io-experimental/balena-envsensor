@@ -1,0 +1,2 @@
+grovepi==1.0.1
+influxdb==5.2.0
