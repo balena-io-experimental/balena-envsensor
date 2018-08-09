@@ -1,9 +1,15 @@
 import grovepi
 import os
+import sys
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from influxdb import InfluxDBClient
+import math
+import smbus
+import RPi.GPIO as GPIO
+#import grovepi
+from grove_i2c_barometic_sensor_BMP180 import BMP085
 
 NEXT_CALL = None
 
@@ -30,6 +36,32 @@ class DHTSensor():
         except IOError:
             return { "error": "IOError" }
 
+class AirSensor():
+    pin = 0
+
+    def __init__(self, pin=0):
+        self.pin = pin
+        grovepi.pinMode(self.pin,"INPUT")
+
+    def getReading(self):
+        try:
+            sensor_value = grovepi.analogRead(self.pin)
+            return sensor_value
+        except IOError:
+            return -1
+
+class BarometricSensor():
+    sensor = None
+
+    def __init__(self, address=0x77, mode=3):
+        self.sensor = BMP085(address, mode)
+
+    def getReading(self):
+        temp = self.sensor.readTemperature()
+        pressure = self.sensor.readPressure()
+        return {"temperature": temp, "pressure": pressure}
+
+
 class Database():
     client = None
     database = None
@@ -49,33 +81,101 @@ class Database():
         # Need to handle errors here: influxdb.exceptions.InfluxDBClientError
 
 
-def readAndSubmit(sensor, database, interval, tags):
-    reading = sensor.getReading()
-    if not reading['error']:
-        readingtime = datetime.utcnow().isoformat()
-        data = [{
-            "measurement": "temperature",
-            "time": readingtime,
-            "fields": {
-                "value": reading['temperature']
-            }
-        }, {
-            "measurement": "humidity",
-            "time": readingtime,
-            "fields": {
-                "value": reading['humidity']
-            }
-        }]
-        database.writeTo(points=data, tags=tags)
-    else:
-        print("Error reading sensor: {}".format(reading['error']))
-
+def readAndSubmit(sensor, airsensor, barosensor, database, interval, tags):
     global NEXT_CALL
     if not NEXT_CALL:
-        NEXT_CALL = datetime.datetime.now() + interval
+        NEXT_CALL = datetime.now() + timedelta(seconds=interval)
     else:
-        NEXT_CALL = NEXT_CALL + interval
-    threading.Timer( NEXT_CALL - time.time(), readAndSubmit, {"sensor": sensor, "database": database, "interval": interval, "tags": tags} ).start()
+        NEXT_CALL = NEXT_CALL + timedelta(seconds=interval)
+
+    data = []
+
+    try:
+        if os.getenv('SENSOR_DHT22', default="true" ) != "false":
+            readingtime = datetime.utcnow().isoformat()
+            reading = sensor.getReading()
+            if not reading['error']:
+                if reading['humidity'] >= 0:
+
+                    data.append({
+                        "measurement": "temperature",
+                        "time": readingtime,
+                        "tags": {
+                            'sensor': 'DHT22'
+                        },
+                        "fields": {
+                            "value": reading['temperature']
+                        }
+                    })
+                    data.append({
+                        "measurement": "humidity",
+                        "time": readingtime,
+                        "tags": {
+                            'sensor': 'DHT22'
+                        },
+                        "fields": {
+                            "value": reading['humidity']
+                        }
+                    })
+        else:
+            print("Error reading sensor: {}".format(reading['error']))
+    except:
+        print("Couldn't read DHT sensor: ", sys.exc_info()[0])
+
+    try:
+        if os.getenv('SENSOR_AIRQUALITY', default="true" ) != "false":
+            readingtime = datetime.utcnow().isoformat()
+            air_reading = airsensor.getReading()
+            if air_reading >0:
+                data.append({
+                    "measurement": "air_quality",
+                    "time": readingtime,
+                    "tags": {
+                        'sensor': 'Grove Air Quality v1.3'
+                    },
+                    "fields": {
+                        "value": air_reading
+                    }
+                })
+    except:
+        print("Couldn't read Air sensor: ", sys.exc_info()[0])
+
+    try:
+        if os.getenv('SENSOR_BMP180', default="true" ) != "false":
+            readingtime = datetime.utcnow().isoformat()
+            baro_reading = barosensor.getReading()
+            data.append({
+                "measurement": "temperature",
+                "time": readingtime,
+                "tags": {
+                    'sensor': 'BMP180'
+                },
+                "fields": {
+                    "value": baro_reading['temperature']
+                }
+            })
+            data.append({
+                "measurement": "pressure",
+                "time": readingtime,
+                "tags": {
+                    'sensor': 'BMP180'
+                },
+                "fields": {
+                    "value": baro_reading['pressure']
+                }
+            })
+    except:
+        print("Couldn't read barometric sensor: ", sys.exc_info()[0])
+
+    if len(data) > 0:
+        try:
+            database.writeTo(points=data, tags=tags)
+        except:
+            print("Couldn't write to database: ", sys.exc_info()[0])
+    else:
+        print("No data to write to the database")
+
+    threading.Timer( (NEXT_CALL - datetime.now()).total_seconds(), readAndSubmit, (sensor, airsensor, barosensor, database, interval, tags) ).start()
 
 
 if __name__ == "__main__":
@@ -95,15 +195,17 @@ if __name__ == "__main__":
 
     database_name = os.getenv('DATABASE_NAME', default="environment")
 
-    tags = { "host": os.environ['RESIN_DEVICE_UUID'], 'sensor': 'grove_dht_pro'}
+    tags = { "host": os.environ['RESIN_DEVICE_UUID'] }
     location = os.getenv('LOCATION')
     if location:
         tags['location'] = location
     fine_location = os.getenv('FINE_LOCATION')
     if fine_location:
         tags['fine_location'] = fine_location
-    database = Database(hostname=nfluxdb_host, port=influxdb_port, database=database)
+    database = Database(hostname=influxdb_host, port=influxdb_port, database=database_name)
     sensor = DHTSensor(4, 1);
+    airsensor = AirSensor(0);
+    barosensor = BarometricSensor()
     interval = int(os.getenv("INTERVAL", default="5"))
 
-    readAndSubmit(sensor=sensor, database=database, interval=interval, tags=tags)
+    readAndSubmit(sensor=sensor, airsensor=airsensor, barosensor=barosensor, database=database, interval=interval, tags=tags)
