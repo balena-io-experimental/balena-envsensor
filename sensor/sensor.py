@@ -2,7 +2,6 @@ import grovepi
 import os
 import sys
 import time
-import threading
 from datetime import datetime, timedelta
 from influxdb import InfluxDBClient
 import math
@@ -10,8 +9,8 @@ import smbus
 import RPi.GPIO as GPIO
 #import grovepi
 from grove_i2c_barometic_sensor_BMP180 import BMP085
-
-NEXT_CALL = None
+import logging
+logging.basicConfig()
 
 class DHTSensor():
     port = None
@@ -82,18 +81,16 @@ class Database():
 
 
 def readAndSubmit(sensor, airsensor, barosensor, database, interval, tags):
-    global NEXT_CALL
-    if not NEXT_CALL:
-        NEXT_CALL = datetime.now() + timedelta(seconds=interval)
-    else:
-        NEXT_CALL = NEXT_CALL + timedelta(seconds=interval)
+
+    logger.info("reading starts")
 
     data = []
 
     try:
-        if os.getenv('SENSOR_DHT22', default="true" ) != "false":
+        if os.getenv('SENSOR_DHT22', default="true") != "false":
             readingtime = datetime.utcnow().isoformat()
             reading = sensor.getReading()
+            logger.debug(reading)
             if not reading['error']:
                 if reading['humidity'] >= 0:
 
@@ -118,12 +115,12 @@ def readAndSubmit(sensor, airsensor, barosensor, database, interval, tags):
                         }
                     })
         else:
-            print("Error reading sensor: {}".format(reading['error']))
+            logger.error("Error reading sensor: {}".format(reading['error']))
     except:
-        print("Couldn't read DHT sensor: ", sys.exc_info()[0])
+        logger.error("Couldn't read DHT sensor: ", sys.exc_info()[0])
 
     try:
-        if os.getenv('SENSOR_AIRQUALITY', default="true" ) != "false":
+        if os.getenv('SENSOR_AIRQUALITY', default="true") != "false":
             readingtime = datetime.utcnow().isoformat()
             air_reading = airsensor.getReading()
             if air_reading >0:
@@ -138,10 +135,10 @@ def readAndSubmit(sensor, airsensor, barosensor, database, interval, tags):
                     }
                 })
     except:
-        print("Couldn't read Air sensor: ", sys.exc_info()[0])
+        logger.error("Couldn't read Air sensor: ", sys.exc_info()[0])
 
     try:
-        if os.getenv('SENSOR_BMP180', default="true" ) != "false":
+        if os.getenv('SENSOR_BMP180', default="true") != "false":
             readingtime = datetime.utcnow().isoformat()
             baro_reading = barosensor.getReading()
             data.append({
@@ -165,33 +162,36 @@ def readAndSubmit(sensor, airsensor, barosensor, database, interval, tags):
                 }
             })
     except:
-        print("Couldn't read barometric sensor: ", sys.exc_info()[0])
+        logger.error("Couldn't read barometric sensor: ", sys.exc_info()[0])
 
     if len(data) > 0:
         try:
+            logger.debug(data)
             database.writeTo(points=data, tags=tags)
         except:
-            print("Couldn't write to database: ", sys.exc_info()[0])
+            logger.error("Couldn't write to database: ", sys.exc_info()[0])
     else:
-        print("No data to write to the database")
-
-    threading.Timer( (NEXT_CALL - datetime.now()).total_seconds(), readAndSubmit, (sensor, airsensor, barosensor, database, interval, tags) ).start()
+        logger.debug("No data to write to the database")
 
 
 if __name__ == "__main__":
+    logger = logging.getLogger('sensor')
+    if os.getenv('DEBUG', default=None):
+        logger.setLevel(logging.DEBUG)
+
     host = os.getenv('RESIN_DEVICE_UUID')
     if not host:
-        print("Need 'RESIN_DEVICE_UUID' to set hostname")
+        logger.error("Need 'RESIN_DEVICE_UUID' to set hostname")
 
     influxdb_host = os.getenv('INFLUXDB_HOST')
     if not influxdb_host:
-        print("Need 'INFLUXDB_HOST' to set database to connect to")
+        logger.error("Need 'INFLUXDB_HOST' to set database to connect to")
     try:
         influxdb_port = int(os.getenv('INFLUXDB_PORT', default="8086"))
     except TypeError:
         influxdb_port = 8086
     except ValueError:
-        print("Value of 'INFLUXDB_PORT' is incorrect, not a number?")
+        logger.error("Value of 'INFLUXDB_PORT' is incorrect, not a number?")
 
     database_name = os.getenv('DATABASE_NAME', default="environment")
 
@@ -203,9 +203,25 @@ if __name__ == "__main__":
     if fine_location:
         tags['fine_location'] = fine_location
     database = Database(hostname=influxdb_host, port=influxdb_port, database=database_name)
-    sensor = DHTSensor(4, 1);
-    airsensor = AirSensor(0);
-    barosensor = BarometricSensor()
+    if os.getenv('SENSOR_DHT22', default="true") != "false":
+        sensor = DHTSensor(4, 1)
+    else:
+        sensor = None
+    if os.getenv('SENSOR_AIRQUALITY', default="true") != "false":
+        airsensor = AirSensor(0)
+    else:
+        airsensor = None
+    if os.getenv('SENSOR_BMP180', default="true") != "false":
+        barosensor = BarometricSensor()
+    else:
+        barosensor = None
     interval = int(os.getenv("INTERVAL", default="5"))
+    logger.debug("Measurement interval: {}s".format(interval))
 
-    readAndSubmit(sensor=sensor, airsensor=airsensor, barosensor=barosensor, database=database, interval=interval, tags=tags)
+    triggertime = time.time()
+    while True:
+        triggertime = triggertime + interval
+        readAndSubmit(sensor=sensor, airsensor=airsensor, barosensor=barosensor, database=database, interval=interval, tags=tags)
+        sleeptime = triggertime - time.time()
+        if sleeptime > 0:
+            time.sleep(triggertime - time.time())
