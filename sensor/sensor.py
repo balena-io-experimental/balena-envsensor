@@ -218,10 +218,13 @@ if __name__ == "__main__":
     interval = int(os.getenv("INTERVAL", default="5"))
     logger.debug("Measurement interval: {}s".format(interval))
 
-    triggertime = time.time()
+    triggertime = time.monotonic()
     while True:
         triggertime = triggertime + interval
         readAndSubmit(sensor=sensor, airsensor=airsensor, barosensor=barosensor, database=database, interval=interval, tags=tags)
-        sleeptime = triggertime - time.time()
+        sleeptime = triggertime - time.monotonic()
         if sleeptime > 0:
-            time.sleep(triggertime - time.time())
+            time.sleep(sleeptime)
+        else:
+            # set up the reference again
+            triggertime = time.monotonic()
