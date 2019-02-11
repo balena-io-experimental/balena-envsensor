@@ -12,6 +12,12 @@ RUN    apt-get update \
          python3-rpi.gpio \
     && apt-get clean
 
+RUN    git clone  https://github.com/DexterInd/GrovePi.git \
+    && cd GrovePi \
+    && git fetch origin pull/423/head:firmware \
+    && git checkout firmware \
+    && pip3 install -e Software/Python
+
 COPY requirements.txt ./
 
 RUN pip3 install -r requirements.txt

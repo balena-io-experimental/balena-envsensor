@@ -92,7 +92,7 @@ def readAndSubmit(sensor, airsensor, barosensor, database, interval, tags):
             reading = sensor.getReading()
             logger.debug(reading)
             if not reading['error']:
-                if reading['humidity'] >= 0:
+                if reading['humidity'] > 0:
 
                     data.append({
                         "measurement": "temperature",
